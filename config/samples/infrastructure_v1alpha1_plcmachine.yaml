@@ -4,6 +4,37 @@ metadata:
   labels:
     app.kubernetes.io/name: cluster-api-provider-plc
     app.kubernetes.io/managed-by: kustomize
-  name: plcmachine-sample
+  name: tep-baseline
 spec:
-  # TODO(user): Add fields here
+  plantAddress: "te-plant.default.svc:50051"
+
+  controllers:
+    # Reactor pressure → purge valve
+    - id: pressure_reactor
+      controllerType: P
+      xmeasIndex: 6        # XMEAS(7) — reactor pressure
+      xmvIndex: 5          # XMV(6)   — purge valve
+      kp: 0.1
+      setpoint: 2705.0
+      bias: 40.06
+
+    # Separator level → underflow valve
+    - id: level_separator
+      controllerType: P
+      xmeasIndex: 11       # XMEAS(12) — separator level
+      xmvIndex: 6          # XMV(7)    — separator underflow
+      kp: 1.0
+      setpoint: 50.0
+      bias: 38.1
+
+    # Stripper level → product valve
+    - id: level_stripper
+      controllerType: P
+      xmeasIndex: 14       # XMEAS(15) — stripper level
+      xmvIndex: 7          # XMV(8)    — stripper product
+      kp: 1.0
+      setpoint: 50.0
+      bias: 46.5
+
+  # Baseline: no disturbances
+  disturbances: []

@@ -20,38 +20,176 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// ─── Spec types ─────────────────────────────────────────────────────────────
 
-// PLCMachineSpec defines the desired state of PLCMachine
-type PLCMachineSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+// ControllerSpec defines a desired control loop on the plant.
+// Each controller reads one XMEAS measurement and drives one XMV actuator.
+type ControllerSpec struct {
+	// id is the unique identifier for this controller (e.g. "pressure_reactor").
+	// +required
+	ID string `json:"id"`
 
-	// foo is an example field of PLCMachine. Edit plcmachine_types.go to remove/update
+	// controllerType is "P", "PI", or "PID".
+	// +kubebuilder:validation:Enum=P;PI;PID
+	// +required
+	ControllerType string `json:"controllerType"`
+
+	// xmeasIndex selects which process measurement to read (0-21).
+	// Maps to XMEAS(index+1) in TEP nomenclature.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=21
+	// +required
+	XmeasIndex int32 `json:"xmeasIndex"`
+
+	// xmvIndex selects which manipulated variable to drive (0-11).
+	// Maps to XMV(index+1) in TEP nomenclature.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=11
+	// +required
+	XmvIndex int32 `json:"xmvIndex"`
+
+	// kp is the proportional gain.
+	// +required
+	Kp float64 `json:"kp"`
+
+	// ki is the integral gain. Unused for P controllers.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Ki float64 `json:"ki,omitempty"`
+
+	// kd is the derivative gain. Unused for P and PI controllers.
+	// +optional
+	Kd float64 `json:"kd,omitempty"`
+
+	// setpoint is the target value for xmeas[xmeasIndex].
+	// +required
+	Setpoint float64 `json:"setpoint"`
+
+	// bias is the steady-state output offset added to the control action.
+	// +required
+	Bias float64 `json:"bias"`
+
+	// enabled controls whether this loop is active. Defaults to true.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled *bool `json:"enabled,omitempty"`
 }
+
+// IDVChannel is a TEP disturbance channel number (1-20).
+// +kubebuilder:validation:Minimum=1
+// +kubebuilder:validation:Maximum=20
+type IDVChannel int32
+
+// PLCMachineSpec defines the desired state of PLCMachine.
+type PLCMachineSpec struct {
+	// plantAddress is the gRPC endpoint of the plant service
+	// (e.g. "te-plant.default.svc:50051").
+	// +required
+	PlantAddress string `json:"plantAddress"`
+
+	// controllers is the set of control loops the operator must ensure
+	// are running on the plant with exactly these parameters.
+	// +optional
+	Controllers []ControllerSpec `json:"controllers,omitempty"`
+
+	// disturbances lists IDV channels (1-20) to activate.
+	// Any channel not listed is deactivated. Empty = baseline (no disturbances).
+	// +optional
+	Disturbances []IDVChannel `json:"disturbances,omitempty"`
+
+	// metricsIntervalMs is how often (ms) the operator polls plant metrics
+	// to update .status. Defaults to 1000.
+	// +optional
+	// +kubebuilder:default=1000
+	// +kubebuilder:validation:Minimum=100
+	MetricsIntervalMs int32 `json:"metricsIntervalMs,omitempty"`
+}
+
+// ─── Status types ───────────────────────────────────────────────────────────
+
+// ControllerStatus is the observed state of a control loop on the plant.
+type ControllerStatus struct {
+	// id matches ControllerSpec.ID.
+	ID string `json:"id"`
+
+	// currentMeasurement is the latest xmeas[xmeasIndex] reading.
+	// +optional
+	CurrentMeasurement float64 `json:"currentMeasurement,omitempty"`
+
+	// currentOutput is the latest xmv[xmvIndex] value.
+	// +optional
+	CurrentOutput float64 `json:"currentOutput,omitempty"`
+
+	// error is (currentMeasurement - setpoint). Positive = above target.
+	// +optional
+	Error float64 `json:"error,omitempty"`
+
+	// enabled reflects whether the loop is active on the plant side.
+	Enabled bool `json:"enabled"`
+}
+
+// AlarmStatus reports an active plant alarm.
+type AlarmStatus struct {
+	// variable is the name of the alarmed process variable.
+	Variable string `json:"variable"`
+
+	// active is true while the alarm condition persists.
+	Active bool `json:"active"`
+}
+
+// PLCMachinePhase describes the lifecycle state of the plant connection.
+// +kubebuilder:validation:Enum=Pending;Connected;Running;Degraded;Shutdown
+type PLCMachinePhase string
+
+const (
+	// PhasePending means the operator has not yet connected to the plant.
+	PhasePending PLCMachinePhase = "Pending"
+	// PhaseConnected means gRPC connection is established but controllers are not yet synced.
+	PhaseConnected PLCMachinePhase = "Connected"
+	// PhaseRunning means controllers are synced and the plant is operating normally.
+	PhaseRunning PLCMachinePhase = "Running"
+	// PhaseDegraded means alarms are active or reconciliation is failing.
+	PhaseDegraded PLCMachinePhase = "Degraded"
+	// PhaseShutdown means the plant triggered an emergency shutdown (ISD).
+	PhaseShutdown PLCMachinePhase = "Shutdown"
+)
 
 // PLCMachineStatus defines the observed state of PLCMachine.
 type PLCMachineStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// phase summarizes the connection and runtime state.
+	// +optional
+	Phase PLCMachinePhase `json:"phase,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// plantTime is the current simulation clock in hours.
+	// +optional
+	PlantTime float64 `json:"plantTime,omitempty"`
 
-	// conditions represent the current state of the PLCMachine resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// isdActive is true when the plant triggered an emergency shutdown.
+	// +optional
+	IsdActive bool `json:"isdActive,omitempty"`
+
+	// derivNorm is the ODE solver derivative norm.
+	// When it drops to zero with active alarms, ISD has occurred.
+	// +optional
+	DerivNorm float64 `json:"derivNorm,omitempty"`
+
+	// controllers reports the actual state of each control loop on the plant.
+	// +optional
+	Controllers []ControllerStatus `json:"controllers,omitempty"`
+
+	// activeDisturbances is the list of IDV channels currently active.
+	// +optional
+	ActiveDisturbances []IDVChannel `json:"activeDisturbances,omitempty"`
+
+	// alarms lists active plant alarms.
+	// +optional
+	Alarms []AlarmStatus `json:"alarms,omitempty"`
+
+	// lastReconcileTime is when the operator last synced spec to plant.
+	// +optional
+	LastReconcileTime *metav1.Time `json:"lastReconcileTime,omitempty"`
+
+	// conditions are standard Kubernetes status conditions.
+	// Types: "Available", "Progressing", "Degraded".
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -60,8 +198,16 @@ type PLCMachineStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Plant",type="string",JSONPath=".spec.plantAddress"
+// +kubebuilder:printcolumn:name="Time (h)",type="number",JSONPath=".status.plantTime",format="float"
+// +kubebuilder:printcolumn:name="ISD",type="boolean",JSONPath=".status.isdActive"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// PLCMachine is the Schema for the plcmachines API
+// PLCMachine is the Schema for the plcmachines API.
+// It represents a connection between the Kubernetes operator and a TEP plant
+// instance running as a gRPC service. The spec declares the desired controller
+// configuration and disturbances; the status reflects actual plant state.
 type PLCMachine struct {
 	metav1.TypeMeta `json:",inline"`
 
