@@ -19,22 +19,16 @@ lab-k8s-supervisor           ← infra do cluster (Kind, manifests de deploy)
 
 O fluxo e:
 
-```
-                    gRPC :50051
-  ┌──────────┐     ──────────────>     ┌──────────────┐
-  │ Operator │                         │ Planta (Rust) │
-  │ (este    │     <──────────────     │ te_service    │
-  │  repo)   │      StreamMetrics      │               │
-  └──────────┘                         └──────────────┘
-       │
-       │ reconcile loop
-       │
-  ┌────┴─────┐
-  │ CRD:     │
-  │ PLCMachine│
-  │ .spec    │  ← "quero esses controladores com esses params"
-  │ .status  │  ← "a planta ta assim agora"
-  └──────────┘
+```mermaid
+flowchart LR
+    CRD["CRD: PLCMachine<br/>.spec = quero esses controladores com esses params<br/>.status = a planta ta assim agora"]
+
+    Operator["Operator<br/>(este repo)"]
+    Plant["Planta (Rust)<br/>te_service"]
+
+    CRD -->|reconcile loop| Operator
+    Operator -->|gRPC :50051| Plant
+    Plant -->|StreamMetrics| Operator
 ```
 
 ## Tecnologia

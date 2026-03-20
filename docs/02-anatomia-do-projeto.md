@@ -9,14 +9,14 @@ O Kubebuilder gera um monte de arquivo quando voce roda o scaffold. A maioria e 
 Esses sao os que carregam a logica do projeto:
 
 ```
-api/v1alpha1/plcmachine_types.go    ← O CONTRATO. Define spec e status da CRD.
+api/v1alpha1/plcmachine_types.go            ← O CONTRATO. Define spec e status da CRD.
 internal/controller/
-  plcmachine_controller.go          ← O CORACAO. Logica de reconciliacao.
+  plcmachine_controller.go                  ← O CORACAO. Logica de reconciliacao.
 config/samples/
-  infrastructure_v1alpha1_plcmachine.yaml  ← Exemplo de CR (como o usuario usa a CRD).
-cmd/main.go                         ← Entry point do manager. Ja esta ok.
-Makefile                            ← Build, test, deploy. Ja esta ok.
-Dockerfile                          ← Build da imagem do operator. Ja esta ok.
+  infrastructure_v1alpha1_plcmachine.yaml   ← Exemplo de CR (como o usuario usa a CRD).
+cmd/main.go                                 ← Entry point do manager. Ja esta ok.
+Makefile                                    ← Build, test, deploy. Ja esta ok.
+Dockerfile                                  ← Build da imagem do operator. Ja esta ok.
 ```
 
 ### Arquivos AUTO-GERADOS (nao edite)
@@ -24,12 +24,12 @@ Dockerfile                          ← Build da imagem do operator. Ja esta ok.
 Esses sao regenerados toda vez que voce roda `make manifests` ou `make generate`:
 
 ```
-api/v1alpha1/zz_generated.deepcopy.go     ← DeepCopy. Gerado a partir dos types.
+api/v1alpha1/zz_generated.deepcopy.go           ← DeepCopy. Gerado a partir dos types.
 config/crd/bases/
   infrastructure.greenlabs.io_plcmachines.yaml  ← O YAML da CRD. Gerado dos markers +kubebuilder.
-config/rbac/role.yaml                      ← Permissoes do controller. Gerado dos markers +kubebuilder:rbac.
-config/rbac/role_binding.yaml              ← Binding. Auto-gerado.
-config/rbac/service_account.yaml           ← SA. Auto-gerado.
+config/rbac/role.yaml                           ← Permissoes do controller. Gerado dos markers +kubebuilder:rbac.
+config/rbac/role_binding.yaml                   ← Binding. Auto-gerado.
+config/rbac/service_account.yaml                ← SA. Auto-gerado.
 ```
 
 **Regra de ouro**: se o arquivo tem `DO NOT EDIT` no topo ou comeca com `zz_`, nao mexe nele. Edita o source (types.go ou controller.go) e roda `make manifests generate`.

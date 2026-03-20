@@ -22,55 +22,37 @@ import (
 
 // ─── Spec types ─────────────────────────────────────────────────────────────
 
-// ControllerSpec defines a desired control loop on the plant.
-// Each controller reads one XMEAS measurement and drives one XMV actuator.
-type ControllerSpec struct {
-	// id is the unique identifier for this controller (e.g. "pressure_reactor").
+// ControllerPolicy defines the desired parameters for a controller that
+// ALREADY EXISTS on the plant. The operator does not create or remove
+// controllers — it only adjusts parameters of existing ones via gRPC.
+type ControllerPolicy struct {
+	// id matches the controller ID on the plant (e.g. "pressure_reactor").
+	// Must correspond to an existing controller returned by ListControllers.
 	// +required
 	ID string `json:"id"`
 
-	// controllerType is "P", "PI", or "PID".
-	// +kubebuilder:validation:Enum=P;PI;PID
-	// +required
-	ControllerType string `json:"controllerType"`
-
-	// xmeasIndex selects which process measurement to read (0-21).
-	// Maps to XMEAS(index+1) in TEP nomenclature.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=21
-	// +required
-	XmeasIndex int32 `json:"xmeasIndex"`
-
-	// xmvIndex selects which manipulated variable to drive (0-11).
-	// Maps to XMV(index+1) in TEP nomenclature.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=11
-	// +required
-	XmvIndex int32 `json:"xmvIndex"`
-
-	// kp is the proportional gain.
-	// +required
-	Kp float64 `json:"kp"`
-
-	// ki is the integral gain. Unused for P controllers.
+	// kp is the desired proportional gain.
 	// +optional
-	Ki float64 `json:"ki,omitempty"`
+	Kp *float64 `json:"kp,omitempty"`
 
-	// kd is the derivative gain. Unused for P and PI controllers.
+	// ki is the desired integral gain.
 	// +optional
-	Kd float64 `json:"kd,omitempty"`
+	Ki *float64 `json:"ki,omitempty"`
 
-	// setpoint is the target value for xmeas[xmeasIndex].
-	// +required
-	Setpoint float64 `json:"setpoint"`
-
-	// bias is the steady-state output offset added to the control action.
-	// +required
-	Bias float64 `json:"bias"`
-
-	// enabled controls whether this loop is active. Defaults to true.
+	// kd is the desired derivative gain.
 	// +optional
-	// +kubebuilder:default=true
+	Kd *float64 `json:"kd,omitempty"`
+
+	// setpoint is the desired target value for the process variable.
+	// +optional
+	Setpoint *float64 `json:"setpoint,omitempty"`
+
+	// bias is the desired steady-state output offset.
+	// +optional
+	Bias *float64 `json:"bias,omitempty"`
+
+	// enabled sets whether this loop should be active. Nil = don't change.
+	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
@@ -86,10 +68,11 @@ type PLCMachineSpec struct {
 	// +required
 	PlantAddress string `json:"plantAddress"`
 
-	// controllers is the set of control loops the operator must ensure
-	// are running on the plant with exactly these parameters.
+	// controllers lists the desired parameters for controllers that already
+	// exist on the plant. The operator does not create controllers — it reads
+	// what the plant has via ListControllers and adjusts to match this policy.
 	// +optional
-	Controllers []ControllerSpec `json:"controllers,omitempty"`
+	Controllers []ControllerPolicy `json:"controllers,omitempty"`
 
 	// disturbances lists IDV channels (1-20) to activate.
 	// Any channel not listed is deactivated. Empty = baseline (no disturbances).
@@ -108,7 +91,7 @@ type PLCMachineSpec struct {
 
 // ControllerStatus is the observed state of a control loop on the plant.
 type ControllerStatus struct {
-	// id matches ControllerSpec.ID.
+	// id matches ControllerPolicy.ID.
 	ID string `json:"id"`
 
 	// currentMeasurement is the latest xmeas[xmeasIndex] reading.
@@ -205,9 +188,11 @@ type PLCMachineStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // PLCMachine is the Schema for the plcmachines API.
-// It represents a connection between the Kubernetes operator and a TEP plant
-// instance running as a gRPC service. The spec declares the desired controller
-// configuration and disturbances; the status reflects actual plant state.
+// It represents a supervisory connection to a TEP plant running as a gRPC
+// service. The spec declares a control POLICY — target parameters for
+// controllers that already exist on the plant. The status reflects the
+// actual plant state observed via gRPC streaming. The reconciler closes
+// the gap between spec (desired) and status (actual) by adjusting parameters.
 type PLCMachine struct {
 	metav1.TypeMeta `json:",inline"`
 
