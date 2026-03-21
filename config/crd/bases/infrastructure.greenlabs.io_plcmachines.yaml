@@ -36,11 +36,10 @@ spec:
       openAPIV3Schema:
         description: |-
           PLCMachine is the Schema for the plcmachines API.
-          It represents a supervisory connection to a TEP plant running as a gRPC
-          service. The spec declares a control POLICY — target parameters for
-          controllers that already exist on the plant. The status reflects the
-          actual plant state observed via gRPC streaming. The reconciler closes
-          the gap between spec (desired) and status (actual) by adjusting parameters.
+          It represents a supervisory controller that monitors a TEP plant via gRPC.
+          The spec defines a SUPERVISORY POLICY — operating ranges and response rules.
+          The status is the operator's MEMORY — last readings, trends, and actions taken.
+          The reconciler loop: Observe → Evaluate → Decide → Act → Record.
         properties:
           apiVersion:
             description: |-
@@ -60,104 +59,127 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PLCMachine
+            description: spec defines the supervisory policy
             properties:
-              controllers:
+              monitoringInterval:
+                description: monitoringInterval configures the adaptive polling frequency.
+                properties:
+                  baseMs:
+                    default: 2000
+                    description: baseMs is the polling interval when the plant is
+                      stable (ms).
+                    format: int32
+                    minimum: 100
+                    type: integer
+                  transientMs:
+                    default: 200
+                    description: |-
+                      transientMs is the polling interval during transients (ms).
+                      Used when the operator detects rapid changes in XMEAS values.
+                    format: int32
+                    minimum: 50
+                    type: integer
+                type: object
+              operatingRanges:
                 description: |-
-                  controllers lists the desired parameters for controllers that already
-                  exist on the plant. The operator does not create controllers — it reads
-                  what the plant has via ListControllers and adjusts to match this policy.
+                  operatingRanges defines acceptable limits for plant variables (XMEAS).
+                  The operator monitors these and triggers response rules when violated.
                 items:
                   description: |-
-                    ControllerPolicy defines the desired parameters for a controller that
-                    ALREADY EXISTS on the plant. The operator does not create or remove
-                    controllers — it only adjusts parameters of existing ones via gRPC.
+                    OperatingRange defines an acceptable range for a plant measurement (XMEAS).
+                    When the measured value exits this range, the operator evaluates response rules.
                   properties:
-                    bias:
-                      description: bias is the desired steady-state output offset.
+                    max:
+                      description: max is the upper acceptable limit. Above this triggers
+                        "above_max".
                       type: number
-                    enabled:
-                      description: enabled sets whether this loop should be active.
-                        Nil = don't change.
-                      type: boolean
-                    id:
+                    min:
+                      description: min is the lower acceptable limit. Below this triggers
+                        "below_min".
+                      type: number
+                    name:
                       description: |-
-                        id matches the controller ID on the plant (e.g. "pressure_reactor").
-                        Must correspond to an existing controller returned by ListControllers.
+                        name is a human-readable identifier for this range (e.g. "reactor_pressure").
+                        Referenced by ResponseRule.watchRef.
                       type: string
-                    kd:
-                      description: kd is the desired derivative gain.
-                      type: number
-                    ki:
-                      description: ki is the desired integral gain.
-                      type: number
-                    kp:
-                      description: kp is the desired proportional gain.
-                      type: number
-                    setpoint:
-                      description: setpoint is the desired target value for the process
-                        variable.
-                      type: number
+                    xmeasIndex:
+                      description: |-
+                        xmeasIndex selects which process measurement to monitor (0-based).
+                        Maps to XMEAS(index+1) in TEP nomenclature.
+                      format: int32
+                      maximum: 40
+                      minimum: 0
+                      type: integer
                   required:
-                  - id
+                  - max
+                  - min
+                  - name
+                  - xmeasIndex
                   type: object
                 type: array
-              disturbances:
-                description: |-
-                  disturbances lists IDV channels (1-20) to activate.
-                  Any channel not listed is deactivated. Empty = baseline (no disturbances).
-                items:
-                  description: IDVChannel is a TEP disturbance channel number (1-20).
-                  format: int32
-                  maximum: 20
-                  minimum: 1
-                  type: integer
-                type: array
-              metricsIntervalMs:
-                default: 1000
-                description: |-
-                  metricsIntervalMs is how often (ms) the operator polls plant metrics
-                  to update .status. Defaults to 1000.
-                format: int32
-                minimum: 100
-                type: integer
               plantAddress:
                 description: |-
                   plantAddress is the gRPC endpoint of the plant service
                   (e.g. "te-plant.default.svc:50051").
                 type: string
+              responseRules:
+                description: |-
+                  responseRules defines what the operator does when a variable exits
+                  its acceptable range. Each rule maps a condition to a controller action.
+                items:
+                  description: |-
+                    ResponseRule defines what the operator does when a variable exits its range.
+                    This is a supervisory decision: "if reactor pressure exceeds max, increase
+                    the gain of the pressure controller".
+                  properties:
+                    adjustValue:
+                      description: |-
+                        adjustValue is the new value to set for the parameter.
+                        For "enabled", use 1.0 (true) or 0.0 (false).
+                      type: number
+                    condition:
+                      description: 'condition is when this rule fires: "above_max"
+                        or "below_min".'
+                      enum:
+                      - above_max
+                      - below_min
+                      type: string
+                    controllerID:
+                      description: |-
+                        controllerID is the ID of the controller to adjust on the plant.
+                        Must match an existing controller returned by ListControllers.
+                      type: string
+                    name:
+                      description: name is a human-readable identifier for this rule.
+                      type: string
+                    parameter:
+                      description: parameter is which controller parameter to change.
+                      enum:
+                      - kp
+                      - ki
+                      - kd
+                      - setpoint
+                      - bias
+                      - enabled
+                      type: string
+                    watchRef:
+                      description: watchRef references an OperatingRange by name.
+                      type: string
+                  required:
+                  - adjustValue
+                  - condition
+                  - controllerID
+                  - name
+                  - parameter
+                  - watchRef
+                  type: object
+                type: array
             required:
             - plantAddress
             type: object
           status:
-            description: status defines the observed state of PLCMachine
+            description: status is the operator's memory of plant state
             properties:
-              activeDisturbances:
-                description: activeDisturbances is the list of IDV channels currently
-                  active.
-                items:
-                  description: IDVChannel is a TEP disturbance channel number (1-20).
-                  format: int32
-                  maximum: 20
-                  minimum: 1
-                  type: integer
-                type: array
-              alarms:
-                description: alarms lists active plant alarms.
-                items:
-                  description: AlarmStatus reports an active plant alarm.
-                  properties:
-                    active:
-                      description: active is true while the alarm condition persists.
-                      type: boolean
-                    variable:
-                      description: variable is the name of the alarmed process variable.
-                      type: string
-                  required:
-                  - active
-                  - variable
-                  type: object
-                type: array
               conditions:
                 description: |-
                   conditions are standard Kubernetes status conditions.
@@ -220,62 +242,98 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              controllers:
-                description: controllers reports the actual state of each control
-                  loop on the plant.
-                items:
-                  description: ControllerStatus is the observed state of a control
-                    loop on the plant.
-                  properties:
-                    currentMeasurement:
-                      description: currentMeasurement is the latest xmeas[xmeasIndex]
-                        reading.
-                      type: number
-                    currentOutput:
-                      description: currentOutput is the latest xmv[xmvIndex] value.
-                      type: number
-                    enabled:
-                      description: enabled reflects whether the loop is active on
-                        the plant side.
-                      type: boolean
-                    error:
-                      description: error is (currentMeasurement - setpoint). Positive
-                        = above target.
-                      type: number
-                    id:
-                      description: id matches ControllerPolicy.ID.
-                      type: string
-                  required:
-                  - enabled
-                  - id
-                  type: object
-                type: array
-              derivNorm:
-                description: |-
-                  derivNorm is the ODE solver derivative norm.
-                  When it drops to zero with active alarms, ISD has occurred.
-                type: number
               isdActive:
                 description: isdActive is true when the plant triggered an emergency
                   shutdown.
                 type: boolean
+              lastAction:
+                description: |-
+                  lastAction records the most recent supervisory action taken.
+                  Nil if the operator has not yet intervened.
+                properties:
+                  controllerID:
+                    description: controllerID is the controller that was adjusted.
+                    type: string
+                  parameter:
+                    description: parameter is which parameter was changed.
+                    type: string
+                  ruleName:
+                    description: ruleName is which ResponseRule triggered this action.
+                    type: string
+                  timestamp:
+                    description: timestamp is when the action was executed.
+                    format: date-time
+                    type: string
+                  value:
+                    description: value is the value that was set.
+                    type: number
+                required:
+                - controllerID
+                - parameter
+                - ruleName
+                - timestamp
+                - value
+                type: object
               lastReconcileTime:
-                description: lastReconcileTime is when the operator last synced spec
-                  to plant.
+                description: lastReconcileTime is when the operator last read the
+                  plant.
                 format: date-time
                 type: string
               phase:
-                description: phase summarizes the connection and runtime state.
+                description: phase summarizes the plant state as perceived by the
+                  operator.
                 enum:
                 - Pending
-                - Connected
-                - Running
-                - Degraded
+                - Stable
+                - Transient
+                - Alarm
                 - Shutdown
                 type: string
               plantTime:
-                description: plantTime is the current simulation clock in hours.
+                description: plantTime is the simulation clock in hours.
                 type: number
+              variables:
+                description: |-
+                  variables stores the operator's memory of each monitored XMEAS.
+                  Includes current value, previous value, trend, and in-range flag.
+                items:
+                  description: VariableStatus is the operator's memory of one plant
+                    measurement.
+                  properties:
+                    inRange:
+                      description: inRange is true when the value is within the OperatingRange
+                        limits.
+                      type: boolean
+                    name:
+                      description: name matches OperatingRange.Name.
+                      type: string
+                    previousValue:
+                      description: |-
+                        previousValue is the reading from the last reconcile cycle.
+                        Used to compute trend.
+                      type: number
+                    trend:
+                      description: 'trend indicates the direction: Rising, Falling,
+                        or Stable.'
+                      enum:
+                      - Rising
+                      - Falling
+                      - Stable
+                      type: string
+                    value:
+                      description: value is the latest reading.
+                      type: number
+                    xmeasIndex:
+                      description: xmeasIndex is which XMEAS this corresponds to.
+                      format: int32
+                      type: integer
+                  required:
+                  - inRange
+                  - name
+                  - value
+                  - xmeasIndex
+                  type: object
+                type: array
             type: object
         required:
         - spec
