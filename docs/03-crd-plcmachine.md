@@ -1,8 +1,10 @@
 # 03 — CRD PLCMachine
 
-A PLCMachine e o unico recurso customizado desse operator. Ela representa uma conexao entre o K8s e uma instancia da planta TEP rodando como servico gRPC.
+A PLCMachine e o unico recurso customizado desse operator. Ela representa uma conexao supervisoria entre o K8s e uma instancia da planta TEP rodando como servico gRPC.
 
 ## A ideia
+
+Os controladores ja existem na planta — sao criados no codigo Rust (main.rs). O operator nao cria nem remove controladores. Ele **observa** metricas via gRPC streaming e **ajusta** parametros dos controladores existentes pra manter a planta no estado desejado.
 
 Voce escreve um YAML assim:
 
@@ -15,42 +17,41 @@ spec:
   plantAddress: "te-plant.default.svc:50051"
   controllers:
     - id: pressure_reactor
-      controllerType: P
-      xmeasIndex: 6
-      xmvIndex: 5
       kp: 0.1
       setpoint: 2705.0
       bias: 40.06
+    - id: level_separator
+      kp: 1.0
+      setpoint: 50.0
   disturbances: []
 ```
 
-E o operator garante que a planta tenha exatamente esses controladores com exatamente esses parametros. Se alguem mudar o `kp` no YAML, o operator atualiza o controlador na planta via gRPC. Se ativar um disturbio, o operator manda o `SetDisturbance`. Reconciliacao continua — o jeito Kubernetes de fazer as coisas.
+E o operator garante que esses controladores operem com esses parametros. Se alguem mudar o `kp` no YAML, o operator atualiza via gRPC. Campos ausentes (nil) = "nao mexe nesse parametro".
 
-## Spec (estado desejado)
+## Spec (politica de controle)
 
-| Campo              | Tipo              | Obrigatorio | Descricao |
-|--------------------|-------------------|-------------|-----------|
-| `plantAddress`     | string            | Sim         | Endpoint gRPC da planta (ex: `te-plant:50051`) |
-| `controllers`      | []ControllerSpec  | Nao         | Loops de controle desejados |
-| `disturbances`     | []int (1-20)      | Nao         | Canais IDV pra ativar. Vazio = sem disturbios |
-| `metricsIntervalMs`| int               | Nao         | Intervalo de polling do status (default: 1000ms) |
+| Campo              | Tipo               | Obrigatorio | Descricao |
+|--------------------|---------------------|-------------|-----------|
+| `plantAddress`     | string              | Sim         | Endpoint gRPC da planta (ex: `te-plant:50051`) |
+| `controllers`      | []ControllerPolicy  | Nao         | Parametros desejados pra controllers existentes |
+| `disturbances`     | []int (1-20)        | Nao         | Canais IDV pra ativar. Vazio = sem disturbios |
+| `metricsIntervalMs`| int                 | Nao         | Intervalo de polling do status (default: 1000ms) |
 
-### ControllerSpec
+### ControllerPolicy
 
-| Campo            | Tipo    | Obrigatorio | Validacao      | Descricao |
-|------------------|---------|-------------|----------------|-----------|
-| `id`             | string  | Sim         |                | Identificador unico (ex: `pressure_reactor`) |
-| `controllerType` | string | Sim         | P, PI, ou PID  | Tipo do controlador |
-| `xmeasIndex`     | int     | Sim         | 0-21           | Qual medicao ler (XMEAS) |
-| `xmvIndex`       | int     | Sim         | 0-11           | Qual atuador comandar (XMV) |
-| `kp`             | float   | Sim         |                | Ganho proporcional |
-| `ki`             | float   | Nao         |                | Ganho integral |
-| `kd`             | float   | Nao         |                | Ganho derivativo |
-| `setpoint`       | float   | Sim         |                | Valor alvo pra medicao |
-| `bias`           | float   | Sim         |                | Offset de saida |
-| `enabled`        | bool    | Nao         | default: true  | Liga/desliga o loop |
+Diferente de um ControllerSpec que "cria" — aqui voce so diz quais parametros quer ajustar. Tudo e opcional exceto o `id` (precisa saber QUAL controller ajustar).
 
-> **Nota sobre os indices**: `xmeasIndex: 6` mapeia para `XMEAS(7)` na nomenclatura TEP (zero-based no Go, 1-based no paper do Downs & Vogel). Os comentarios no sample YAML deixam isso explicito.
+| Campo      | Tipo    | Obrigatorio | Descricao |
+|------------|---------|-------------|-----------|
+| `id`       | string  | Sim         | ID do controller na planta (ex: `pressure_reactor`) |
+| `kp`       | *float  | Nao         | Ganho proporcional desejado |
+| `ki`       | *float  | Nao         | Ganho integral desejado |
+| `kd`       | *float  | Nao         | Ganho derivativo desejado |
+| `setpoint` | *float  | Nao         | Valor alvo desejado |
+| `bias`     | *float  | Nao         | Offset de saida desejado |
+| `enabled`  | *bool   | Nao         | Liga/desliga o loop. Nil = nao mexe |
+
+> **Porque ponteiros?** Campos nil significam "nao alterar esse parametro". Se voce so quer mudar o `setpoint` de um controller, coloca so `id` e `setpoint` — o resto fica como esta na planta.
 
 ## Status (estado observado)
 
@@ -74,7 +75,7 @@ O operator preenche o status a cada ciclo de reconciliacao, lendo metricas da pl
 |---------------|-------------|
 | `Pending`     | Operator ainda nao conectou na planta |
 | `Connected`   | Conexao gRPC ok, mas controllers nao sincronizados |
-| `Running`     | Tudo sincronizado, planta operando normal |
+| `Running`     | Parametros sincronizados, planta operando normal |
 | `Degraded`    | Alarmes ativos ou reconciliacao falhando |
 | `Shutdown`    | Planta acionou ISD (parada de emergencia) |
 
@@ -82,9 +83,9 @@ O operator preenche o status a cada ciclo de reconciliacao, lendo metricas da pl
 
 | Campo                | Tipo   | Descricao |
 |----------------------|--------|-----------|
-| `id`                 | string | Mesmo ID do spec |
-| `currentMeasurement` | float  | Valor atual de xmeas[xmeasIndex] |
-| `currentOutput`      | float  | Valor atual de xmv[xmvIndex] |
+| `id`                 | string | Mesmo ID da policy |
+| `currentMeasurement` | float  | Valor atual da medicao |
+| `currentOutput`      | float  | Valor atual da saida |
 | `error`              | float  | (measurement - setpoint). Positivo = acima do alvo |
 | `enabled`            | bool   | Se esta ativo na planta |
 
@@ -98,16 +99,16 @@ NAME           PHASE     PLANT                             TIME (h)   ISD     AG
 tep-baseline   Running   te-plant.default.svc:50051        12.345     false   2h
 ```
 
-## Mapeamento CRD ↔ gRPC
+## Mapeamento CRD <> gRPC
 
-O reconciler vai usar a API gRPC da planta pra manter spec e status em sincronia:
+O reconciler usa a API gRPC da planta pra manter spec e status em sincronia:
 
 | Operacao do reconciler          | RPC gRPC chamada       |
 |---------------------------------|------------------------|
-| Adicionar controller            | `AddController`        |
-| Remover controller              | `RemoveController`     |
-| Atualizar parametros            | `UpdateController`     |
-| Listar controllers atuais       | `ListControllers`      |
+| Ler controllers atuais          | `ListControllers`      |
+| Ajustar parametros              | `UpdateController`     |
 | Ativar/desativar disturbio      | `SetDisturbance`       |
 | Ler metricas pra status         | `GetPlantStatus`       |
 | Stream continuo (futuro)        | `StreamMetrics`        |
+
+> **Nota:** nao tem `AddController` nem `RemoveController` no fluxo do operator. Os controllers sao criados no codigo Rust da planta. O operator so ajusta parametros dos que ja existem.

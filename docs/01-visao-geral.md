@@ -4,7 +4,7 @@
 
 Esse e o **operator Kubernetes** que faz a ponte entre o cluster K8s e a planta TEP (Tennessee Eastman Process). O nome `cluster-api-provider-plc` vem da analogia com os providers do Cluster API — assim como o CAPA provisiona maquinas na AWS, esse provider "provisiona" e supervisiona controladores numa planta industrial via gRPC.
 
-Na pratica: voce escreve um YAML declarando quais controladores quer na planta, com quais parametros, e o operator cuida de fazer isso acontecer. Se algo sair do desejado (alarme, shutdown, drift de setpoint), o operator detecta e pode reconciliar.
+Na pratica: os controladores ja existem na planta (criados no codigo Rust). Voce escreve um YAML declarando a **politica de controle** — com quais parametros esses controladores devem operar. O operator observa a planta via gRPC streaming e, se os parametros divergirem do desejado (ou se aparecer alarme, disturbio, shutdown), ele ajusta. Nao cria nem remove controladores — so reconfigura.
 
 ## Onde esse repo se encaixa
 
@@ -21,7 +21,7 @@ O fluxo e:
 
 ```mermaid
 flowchart LR
-    CRD["CRD: PLCMachine<br/>.spec = quero esses controladores com esses params<br/>.status = a planta ta assim agora"]
+    CRD["CRD: PLCMachine<br/>.spec = politica de controle (params desejados)<br/>.status = a planta ta assim agora"]
 
     Operator["Operator<br/>(este repo)"]
     Plant["Planta (Rust)<br/>te_service"]

@@ -8,9 +8,9 @@ Esse operator faz parte do **TEP Digital Twin Lab** — um laboratorio onde o Ku
 
 ```
 kubectl apply -f plcmachine.yaml
-  → operator le o spec
+  → operator le o spec (politica de controle)
     → conecta via gRPC na planta
-      → adiciona/atualiza/remove controllers
+      → ajusta parametros dos controllers existentes
         → monitora metricas e atualiza status
 ```
 
@@ -38,7 +38,7 @@ kubectl get plcmachines
 
 ## CRD: PLCMachine
 
-Recurso unico do operator. O `.spec` declara o que voce quer; o `.status` reflete o que a planta reporta.
+Recurso unico do operator. O `.spec` declara a **politica de controle** — parametros desejados pra controladores que ja existem na planta. O `.status` reflete o que a planta reporta via gRPC.
 
 ```yaml
 apiVersion: infrastructure.greenlabs.io/v1alpha1
@@ -49,12 +49,13 @@ spec:
   plantAddress: "te-plant.default.svc:50051"
   controllers:
     - id: pressure_reactor
-      controllerType: P
-      xmeasIndex: 6      # XMEAS(7) — reactor pressure
-      xmvIndex: 5        # XMV(6)   — purge valve
       kp: 0.1
       setpoint: 2705.0
       bias: 40.06
+    - id: level_separator
+      kp: 1.0
+      setpoint: 50.0
+      bias: 38.1
   disturbances: []       # baseline — sem disturbios
 ```
 
