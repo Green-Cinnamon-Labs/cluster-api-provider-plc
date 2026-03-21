@@ -1,17 +1,18 @@
 # cluster-api-provider-plc
 
-Operator Kubernetes para supervisao da planta Tennessee Eastman Process (TEP). Funciona como um controlador supervisorio: recebe a descricao do estado desejado via CRD (`PLCMachine`) e reconcilia com a planta via gRPC.
+Operator Kubernetes que atua como controlador supervisorio da planta Tennessee Eastman Process (TEP). Monitora variaveis da planta via gRPC, avalia se estao dentro de faixas aceitaveis, e ajusta parametros dos controladores quando necessario.
 
 ## Contexto
 
-Esse operator faz parte do **TEP Digital Twin Lab** — um laboratorio onde o Kubernetes atua como sistema supervisorio de uma planta quimica simulada. A planta roda como um servico Rust com API gRPC; esse operator conecta nela, configura controladores e monitora metricas.
+Esse operator faz parte do **TEP Digital Twin Lab** — um laboratorio onde o Kubernetes atua como sistema supervisorio de uma planta quimica simulada. A planta vive sozinha, com controladores PID rodando e disturbios aleatorios. O operator nao empurra config — ele observa, avalia, decide e age.
 
 ```
 kubectl apply -f plcmachine.yaml
-  → operator le o spec (politica de controle)
-    → conecta via gRPC na planta
-      → ajusta parametros dos controllers existentes
-        → monitora metricas e atualiza status
+  -> operator le a politica supervisoria (faixas, regras)
+    -> conecta via gRPC na planta
+      -> le XMEAS (variaveis medidas)
+        -> se algo sai da faixa, ajusta controlador
+          -> grava estado lido como memoria (status)
 ```
 
 ## Quick start
@@ -38,7 +39,7 @@ kubectl get plcmachines
 
 ## CRD: PLCMachine
 
-Recurso unico do operator. O `.spec` declara a **politica de controle** — parametros desejados pra controladores que ja existem na planta. O `.status` reflete o que a planta reporta via gRPC.
+Recurso unico do operator. O `.spec` define a **politica supervisoria** — faixas aceitaveis e regras de resposta. O `.status` e a **memoria** do operator — ultimas leituras, tendencias, acoes tomadas.
 
 ```yaml
 apiVersion: infrastructure.greenlabs.io/v1alpha1
@@ -47,16 +48,21 @@ metadata:
   name: tep-baseline
 spec:
   plantAddress: "te-plant.default.svc:50051"
-  controllers:
-    - id: pressure_reactor
-      kp: 0.1
-      setpoint: 2705.0
-      bias: 40.06
-    - id: level_separator
-      kp: 1.0
-      setpoint: 50.0
-      bias: 38.1
-  disturbances: []       # baseline — sem disturbios
+  operatingRanges:
+    - name: reactor_pressure
+      xmeasIndex: 6          # XMEAS(7) — pressao do reator
+      min: 2600.0
+      max: 2800.0
+  responseRules:
+    - name: pressure_high
+      watchRef: reactor_pressure
+      condition: above_max
+      controllerID: pressure_reactor
+      parameter: kp
+      adjustValue: 0.15
+  monitoringInterval:
+    baseMs: 2000
+    transientMs: 200
 ```
 
 Detalhes completos em [docs/03-crd-plcmachine.md](docs/03-crd-plcmachine.md).
@@ -82,11 +88,11 @@ Detalhes completos em [docs/03-crd-plcmachine.md](docs/03-crd-plcmachine.md).
 ## Estrutura
 
 ```
-api/v1alpha1/          ← CRD types (PLCMachine spec/status)
-internal/controller/   ← Reconciler (logica de negocio)
-cmd/main.go            ← Entry point do manager
-config/                ← Kustomize: CRD, RBAC, deployment
-docs/                  ← Documentacao do projeto
+api/v1alpha1/          <- CRD types (PLCMachine spec/status)
+internal/controller/   <- Reconciler (logica supervisoria)
+cmd/main.go            <- Entry point do manager
+config/                <- Kustomize: CRD, RBAC, deployment
+docs/                  <- Documentacao do projeto
 ```
 
 > Para entender o que cada arquivo faz e o que e boilerplate do Kubebuilder, veja [docs/02-anatomia-do-projeto.md](docs/02-anatomia-do-projeto.md).
@@ -94,8 +100,8 @@ docs/                  ← Documentacao do projeto
 ## Status do desenvolvimento
 
 - [x] Scaffold Kubebuilder
-- [x] CRD PLCMachine com campos reais (#37)
+- [x] CRD PLCMachine com politica supervisoria (#37)
 - [ ] Reconciler com gRPC client (#38)
 - [ ] Setup Kind cluster (#39)
 - [ ] Deploy planta + operator (#40)
-- [ ] Teste E2E: CR → IDV → reconciliacao (#41)
+- [ ] Teste E2E: CR -> disturbio -> reconciliacao (#41)

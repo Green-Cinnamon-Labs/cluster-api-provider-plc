@@ -2,33 +2,33 @@
 
 ## O que e esse repo?
 
-Esse e o **operator Kubernetes** que faz a ponte entre o cluster K8s e a planta TEP (Tennessee Eastman Process). O nome `cluster-api-provider-plc` vem da analogia com os providers do Cluster API — assim como o CAPA provisiona maquinas na AWS, esse provider "provisiona" e supervisiona controladores numa planta industrial via gRPC.
+Esse e o **operator Kubernetes** que atua como controlador supervisorio da planta TEP (Tennessee Eastman Process). O nome `cluster-api-provider-plc` vem da analogia com os providers do Cluster API — assim como o CAPA provisiona maquinas na AWS, esse provider supervisiona controladores numa planta industrial via gRPC.
 
-Na pratica: os controladores ja existem na planta (criados no codigo Rust). Voce escreve um YAML declarando a **politica de controle** — com quais parametros esses controladores devem operar. O operator observa a planta via gRPC streaming e, se os parametros divergirem do desejado (ou se aparecer alarme, disturbio, shutdown), ele ajusta. Nao cria nem remove controladores — so reconfigura.
+A planta vive sozinha — tem controladores PID ja rodando e sofre disturbios aleatorios. O operator nao empurra configuracao. Ele **observa** as variaveis medidas (XMEAS) via gRPC, **avalia** se estao dentro de faixas aceitaveis, **decide** se precisa intervir, e **age** ajustando parametros dos controladores existentes. Se a planta esta estavel, nao faz nada.
 
 ## Onde esse repo se encaixa
 
 O lab tem 4 repositorios:
 
 ```
-spec-tennessee-eastman       ← issues, specs, decisoes de arquitetura
-fork-tennesseeEastman        ← a planta (Rust) + gRPC server
-cluster-api-provider-plc     ← ESTE REPO: o operator K8s (Go)
-lab-k8s-supervisor           ← infra do cluster (Kind, manifests de deploy)
+spec-tennessee-eastman       <- issues, specs, decisoes de arquitetura
+fork-tennesseeEastman        <- a planta (Rust) + gRPC server
+cluster-api-provider-plc     <- ESTE REPO: o operator K8s (Go)
+lab-k8s-supervisor           <- infra do cluster (Kind, manifests de deploy)
 ```
 
 O fluxo e:
 
 ```mermaid
 flowchart LR
-    CRD["CRD: PLCMachine<br/>.spec = politica de controle (params desejados)<br/>.status = a planta ta assim agora"]
+    CRD["CRD: PLCMachine<br/>.spec = politica supervisoria (faixas, regras)<br/>.status = memoria do operator (leituras, trends)"]
 
-    Operator["Operator<br/>(este repo)"]
+    Operator["Operator<br/>(este repo)<br/>Observa > Avalia > Decide > Age"]
     Plant["Planta (Rust)<br/>te_service"]
 
     CRD -->|reconcile loop| Operator
     Operator -->|gRPC :50051| Plant
-    Plant -->|StreamMetrics| Operator
+    Plant -->|XMEAS readings| Operator
 ```
 
 ## Tecnologia
@@ -43,14 +43,13 @@ flowchart LR
 | O que                        | Status         |
 |------------------------------|----------------|
 | Scaffold do Kubebuilder      | Completo       |
-| CRD PLCMachine (types)       | Desenhada      |
+| CRD PLCMachine (types)       | Redesenhada (supervisoria) |
 | Reconciler                   | Stub (vazio)   |
 | RBAC, Kustomize, Deployment  | Auto-gerado    |
 | Dockerfile do operator       | Pronto         |
 | Testes unitarios             | Template       |
 | Testes E2E                   | Template       |
-| CI (lint, test, e2e)         | Scaffolded     |
 
 ## Proximo passo
 
-Implementar o reconciler (issue #38) — o coracao do operator que conecta via gRPC na planta e faz a reconciliacao spec vs status.
+Implementar o reconciler (issue #38) — o loop supervisorio que conecta via gRPC na planta, le XMEAS, avalia faixas, e decide se precisa ajustar parametros.

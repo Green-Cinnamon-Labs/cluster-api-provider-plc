@@ -8,24 +8,57 @@ metadata:
 spec:
   plantAddress: "te-plant.default.svc:50051"
 
-  # Politica de controle: parametros desejados para controladores que
-  # JA EXISTEM na planta. O operator nao cria controllers — so ajusta.
-  # Campos nil = "nao mexe nesse parametro".
-  controllers:
-    - id: pressure_reactor
-      kp: 0.1
-      setpoint: 2705.0
-      bias: 40.06
+  # Faixas aceitaveis pra variaveis da planta.
+  # Se o valor sair dessa faixa, o operator avalia as responseRules.
+  operatingRanges:
+    - name: reactor_pressure
+      xmeasIndex: 6          # XMEAS(7) — pressao do reator
+      min: 2600.0
+      max: 2800.0
 
-    - id: level_separator
-      kp: 1.0
-      setpoint: 50.0
-      bias: 38.1
+    - name: separator_level
+      xmeasIndex: 11         # XMEAS(12) — nivel do separador
+      min: 40.0
+      max: 60.0
 
-    - id: level_stripper
-      kp: 1.0
-      setpoint: 50.0
-      bias: 46.5
+    - name: stripper_level
+      xmeasIndex: 14         # XMEAS(15) — nivel do stripper
+      min: 40.0
+      max: 60.0
 
-  # Baseline: sem disturbios
-  disturbances: []
+  # Regras de resposta: se a variavel sair da faixa, qual acao tomar.
+  # O operator so age quando uma regra dispara — nao fica empurrando config.
+  responseRules:
+    # Se pressao do reator subir demais, aumenta o ganho do controlador
+    # pra que ele reaja mais forte e traga de volta.
+    - name: pressure_high
+      watchRef: reactor_pressure
+      condition: above_max
+      controllerID: pressure_reactor
+      parameter: kp
+      adjustValue: 0.15
+
+    # Se pressao do reator cair demais, reduz o ganho
+    # pra evitar overcorrection.
+    - name: pressure_low
+      watchRef: reactor_pressure
+      condition: below_min
+      controllerID: pressure_reactor
+      parameter: kp
+      adjustValue: 0.05
+
+    # Se nivel do separador subir demais, aumenta o setpoint
+    # da valvula de saida.
+    - name: separator_high
+      watchRef: separator_level
+      condition: above_max
+      controllerID: level_separator
+      parameter: setpoint
+      adjustValue: 45.0
+
+  # Intervalos de monitoramento adaptativos.
+  # Em regime estavel, monitora a cada 2s. Se detectar transitorio
+  # (valores mudando rapido), acelera pra 200ms.
+  monitoringInterval:
+    baseMs: 2000
+    transientMs: 200
