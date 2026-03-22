@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"math"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,12 +29,11 @@ import (
 
 	v1alpha1 "github.com/Green-Cinnamon-Labs/cluster-api-provider-plc/api/v1alpha1"
 	plantgrpc "github.com/Green-Cinnamon-Labs/cluster-api-provider-plc/internal/grpc"
-	pb "github.com/Green-Cinnamon-Labs/cluster-api-provider-plc/internal/grpc/gen/tepv1"
 )
 
 // PLCMachineReconciler reconciles a PLCMachine object.
-// This is a SUPERVISORY CONTROLLER, not a config syncer.
-// It observes plant state, evaluates operating ranges, and decides to act.
+// Phase 1 (#40): observation only — connect, read, record.
+// Phase 2 (#41): supervisory logic — evaluate, decide, act.
 type PLCMachineReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -45,7 +43,7 @@ type PLCMachineReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.greenlabs.io,resources=plcmachines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.greenlabs.io,resources=plcmachines/finalizers,verbs=update
 
-// Reconcile implements the supervisory loop: Observe → Evaluate → Decide → Act → Record.
+// Reconcile implements the observation loop: Connect → Read → Record → Requeue.
 func (r *PLCMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -68,7 +66,7 @@ func (r *PLCMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	defer plantClient.Close()
 
-	// 3. Observe — read plant state
+	// 3. Read plant state
 	plantStatus, err := plantClient.GetPlantStatus(ctx)
 	if err != nil {
 		log.Error(err, "failed to read plant status")
@@ -88,16 +86,12 @@ func (r *PLCMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		status.Phase = v1alpha1.PhaseShutdown
 		status.IsdActive = true
 		_ = r.Status().Update(ctx, &machine)
-		return ctrl.Result{}, nil // don't requeue — plant is dead
+		return ctrl.Result{}, nil
 	}
 	status.IsdActive = false
 
-	// 5. Evaluate — compare XMEAS against operating ranges
-	previousVars := buildPreviousMap(status.Variables)
+	// 5. Record XMEAS readings in status
 	variables := make([]v1alpha1.VariableStatus, 0, len(spec.OperatingRanges))
-	anyOutOfRange := false
-	anyTransient := false
-
 	for _, rng := range spec.OperatingRanges {
 		idx := int(rng.XmeasIndex)
 		if idx >= len(metrics.Xmeas) {
@@ -106,99 +100,35 @@ func (r *PLCMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		value := metrics.Xmeas[idx]
-		prev, hasPrev := previousVars[rng.Name]
-		inRange := value >= rng.Min && value <= rng.Max
-		trend := computeTrend(value, prev, hasPrev, rng.Max-rng.Min)
-
-		if !inRange {
-			anyOutOfRange = true
-		}
-		if trend != v1alpha1.TrendStable {
-			anyTransient = true
-		}
-
 		variables = append(variables, v1alpha1.VariableStatus{
-			Name:          rng.Name,
-			XmeasIndex:    rng.XmeasIndex,
-			Value:         value,
-			PreviousValue: prev,
-			Trend:         trend,
-			InRange:       inRange,
+			Name:       rng.Name,
+			XmeasIndex: rng.XmeasIndex,
+			Value:      value,
+			InRange:    value >= rng.Min && value <= rng.Max,
 		})
 	}
 	status.Variables = variables
 
-	// 6. Decide & Act — evaluate response rules
-	for _, rule := range spec.ResponseRules {
-		varStatus := findVariable(variables, rule.WatchRef)
-		if varStatus == nil {
-			continue
-		}
+	// 6. Phase = Stable (observation only, no evaluation logic yet)
+	status.Phase = v1alpha1.PhaseStable
 
-		shouldFire := false
-		switch rule.Condition {
-		case v1alpha1.ConditionAboveMax:
-			shouldFire = !varStatus.InRange && varStatus.Value > findRange(spec.OperatingRanges, rule.WatchRef).Max
-		case v1alpha1.ConditionBelowMin:
-			shouldFire = !varStatus.InRange && varStatus.Value < findRange(spec.OperatingRanges, rule.WatchRef).Min
-		}
+	log.Info("observation cycle complete",
+		"plantTime", metrics.TH,
+		"variables", len(variables),
+		"xmeas_count", len(metrics.Xmeas),
+		"xmv_count", len(metrics.Xmv),
+	)
 
-		if !shouldFire {
-			continue
-		}
-
-		log.Info("response rule fired",
-			"rule", rule.Name,
-			"variable", rule.WatchRef,
-			"controller", rule.ControllerID,
-			"parameter", rule.Parameter,
-			"value", rule.AdjustValue,
-		)
-
-		// Act — call UpdateController via gRPC
-		updateReq := buildUpdateRequest(rule)
-		_, err := plantClient.UpdateController(ctx, updateReq)
-		if err != nil {
-			log.Error(err, "failed to update controller", "rule", rule.Name)
-			continue
-		}
-
-		status.LastAction = &v1alpha1.ActionTaken{
-			RuleName:     rule.Name,
-			ControllerID: rule.ControllerID,
-			Parameter:    rule.Parameter,
-			Value:        rule.AdjustValue,
-			Timestamp:    now,
-		}
-	}
-
-	// 7. Determine phase
-	switch {
-	case anyOutOfRange:
-		status.Phase = v1alpha1.PhaseAlarm
-	case anyTransient:
-		status.Phase = v1alpha1.PhaseTransient
-	default:
-		status.Phase = v1alpha1.PhaseStable
-	}
-
-	// 8. Record — write status (memory for next cycle)
+	// 7. Write status
 	if err := r.Status().Update(ctx, &machine); err != nil {
 		log.Error(err, "failed to update status")
 		return ctrl.Result{}, err
 	}
 
-	// 9. Adaptive requeue
+	// 8. Requeue at base interval
 	interval := time.Duration(spec.MonitoringInterval.BaseMs) * time.Millisecond
 	if interval == 0 {
 		interval = 2 * time.Second
-	}
-	if status.Phase == v1alpha1.PhaseTransient || status.Phase == v1alpha1.PhaseAlarm {
-		transient := time.Duration(spec.MonitoringInterval.TransientMs) * time.Millisecond
-		if transient == 0 {
-			transient = 200 * time.Millisecond
-		}
-		interval = transient
 	}
 
 	return ctrl.Result{RequeueAfter: interval}, nil
@@ -210,73 +140,4 @@ func (r *PLCMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1alpha1.PLCMachine{}).
 		Named("plcmachine").
 		Complete(r)
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// buildPreviousMap creates a lookup from variable name to its last recorded value.
-func buildPreviousMap(vars []v1alpha1.VariableStatus) map[string]float64 {
-	m := make(map[string]float64, len(vars))
-	for _, v := range vars {
-		m[v.Name] = v.Value
-	}
-	return m
-}
-
-// computeTrend compares current vs previous value relative to the operating range span.
-func computeTrend(current, previous float64, hasPrev bool, span float64) v1alpha1.VariableTrend {
-	if !hasPrev || span == 0 {
-		return v1alpha1.TrendStable
-	}
-	delta := current - previous
-	threshold := 0.005 * span // 0.5% of range
-	if math.Abs(delta) < threshold {
-		return v1alpha1.TrendStable
-	}
-	if delta > 0 {
-		return v1alpha1.TrendRising
-	}
-	return v1alpha1.TrendFalling
-}
-
-// findVariable finds a VariableStatus by name.
-func findVariable(vars []v1alpha1.VariableStatus, name string) *v1alpha1.VariableStatus {
-	for i := range vars {
-		if vars[i].Name == name {
-			return &vars[i]
-		}
-	}
-	return nil
-}
-
-// findRange finds an OperatingRange by name.
-func findRange(ranges []v1alpha1.OperatingRange, name string) *v1alpha1.OperatingRange {
-	for i := range ranges {
-		if ranges[i].Name == name {
-			return &ranges[i]
-		}
-	}
-	return nil
-}
-
-// buildUpdateRequest creates a gRPC UpdateControllerRequest from a response rule.
-func buildUpdateRequest(rule v1alpha1.ResponseRule) *pb.UpdateControllerRequest {
-	req := &pb.UpdateControllerRequest{Id: rule.ControllerID}
-	v := rule.AdjustValue
-	switch rule.Parameter {
-	case "kp":
-		req.Kp = &v
-	case "ki":
-		req.Ki = &v
-	case "kd":
-		req.Kd = &v
-	case "setpoint":
-		req.Setpoint = &v
-	case "bias":
-		req.Bias = &v
-	case "enabled":
-		b := v != 0
-		req.Enabled = &b
-	}
-	return req
 }
